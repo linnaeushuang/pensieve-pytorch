@@ -5,12 +5,13 @@ The [author](https://github.com/hongzimao/pensieve) of pensieve uses tensorflow 
 
 
 run an example:
+
         ```
         python main.py
         ```
 
 ## dependencise:
 
-- python-2.7
+- python-2.7.15
 - pytorch-1.0.1
 - numpy-1.16.2
