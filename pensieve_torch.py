@@ -96,7 +96,7 @@ def central_agent(net_params_queues, exp_queues, model_type):
 
 
     net=A3C(IS_CENTRAL,model_type,[S_INFO,S_LEN],A_DIM,ACTOR_LR_RATE,CRITIC_LR_RATE)
-    test_log_file=open(LOG_FILE+'_test','a')
+    test_log_file=open(LOG_FILE+'_test','w')
 
     if CRITIC_MODEL is not None and os.path.exists(ACTOR_MODEL):
         net.actorNetwork.load_state_dict(torch.load(ACTOR_MODEL))
@@ -162,9 +162,6 @@ def central_agent(net_params_queues, exp_queues, model_type):
             if model_type<2:
                 torch.save(net.criticNetwork.state_dict(),SUMMARY_DIR+"/critic.pt")
             testing(epoch,SUMMARY_DIR+"/actor.pt",test_log_file)
-
-        #if epoch % 200 ==0 :
-        #    time.sleep(25)
 
 
 def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue, model_type):
