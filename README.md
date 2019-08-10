@@ -37,4 +37,4 @@ Figure1:testing average QoE per 100 episodes.
 
 I use testing-function to get average QoE per 100 episodes in training,and train 6 times using seed(42,142,242,342,442,542).
 
-I find a phenomenon that the even without critic network,I can get the similar results(see model_0 and model_2)
+I find a phenomenon that even without critic network,I can get the similar results(see model_0 and model_2).
