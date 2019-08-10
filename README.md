@@ -31,4 +31,4 @@ You can run an example:
 
 ## Results
 
-there should be a picture here.
+<img src="img/figure-1a.png" width="400" height="400" alt="1a"/> <img src="img/figure-1b.png" width="400" height="400" alt="1b"/>
