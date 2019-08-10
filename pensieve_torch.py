@@ -38,7 +38,7 @@ TRAIN_TRACES = './data/cooked_traces/'
 #ACTOR_MODEL = './results/actor.pt'
 CRITIC_MODEL = None
 
-TOTALEPOCH=300
+TOTALEPOCH=30000
 IS_CENTRAL=True
 NO_CENTRAL=False
 

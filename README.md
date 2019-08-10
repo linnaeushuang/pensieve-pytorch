@@ -31,4 +31,10 @@ You can run an example:
 
 ## Results
 
-<img src="img/figure-1a.png" width="400" height="400" alt="1a"/> <img src="img/figure-1b.png" width="400" height="400" alt="1b"/>
+<img src="img/figure-1a.png" width="400" height="300" alt="1a"/> <img src="img/figure-1b.png" width="400" height="300" alt="1b"/>
+
+Figure1:testing average QoE per 100 episodes.
+
+I use testing-function to get average QoE per 100 episodes in training,and train 6 times using seed(42,142,242,342,442,542).
+
+I find a phenomenon that the even without critic network,I can get the similar results(see model_0 and model_2)
