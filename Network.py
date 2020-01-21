@@ -81,7 +81,7 @@ class ActorNetwork(nn.Module):
 
         fcOutput=F.relu(self.fullyConnected(fullyConnectedInput),inplace=True)
         
-        out=F.softmax(self.outputLayer(fcOutput))
+        out=F.softmax(self.outputLayer(fcOutput), dim=1)
 
         return out
 
