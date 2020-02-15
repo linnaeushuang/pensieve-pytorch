@@ -1,9 +1,7 @@
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from datetime import datetime
 
 
 
@@ -81,7 +79,7 @@ class ActorNetwork(nn.Module):
 
         fcOutput=F.relu(self.fullyConnected(fullyConnectedInput),inplace=True)
         
-        out=F.softmax(self.outputLayer(fcOutput))
+        out=torch.softmax(self.outputLayer(fcOutput),dim=-1)
 
         return out
 
@@ -171,7 +169,6 @@ if __name__ =='__main__':
 
     discount=0.9
 
-    timenow=datetime.now()
     c_net=CriticNetwork([S_INFO,S_LEN],ACTION_DIM) # agent_num=2
 
     t_c_net=CriticNetwork([S_INFO,S_LEN],ACTION_DIM)
@@ -187,16 +184,15 @@ if __name__ =='__main__':
     esp=100
     for i in range(esp):
         npState=torch.randn(AGENT_NUM,S_INFO,S_LEN)
-        net_npState=torch.randn(AGENT_NUM,S_INFO,S_LEN)
+        next_npState=torch.randn(AGENT_NUM,S_INFO,S_LEN)
         #reward=torch.randn(1)
         reward=torch.randn(AGENT_NUM)
 
         action=a_net.forward(npState)
-        t_action=a_net.forward(net_npState)
+        t_action=a_net.forward(next_npState)
 
         q=c_net.forward(npState)
-        print(q)
-        t_q_out=t_c_net.forward(net_npState)
+        t_q_out=t_c_net.forward(next_npState)
 
         updateCriticLoss=loss_func(reward,q)
 
@@ -204,7 +200,6 @@ if __name__ =='__main__':
         updateCriticLoss.backward()
         c_optim.step()
 
-    print('train 4800 times use:'+str(datetime.now()-timenow))
 
 
 

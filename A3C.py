@@ -1,9 +1,8 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Categorical
 from Network import (ActorNetwork,CriticNetwork)
-from datetime import datetime
 
 PATH='./results/'
 
@@ -20,7 +19,7 @@ class A3C(object):
         self.is_central=is_central
         self.device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.actorNetwork=ActorNetwork(self.s_dim,self.a_dim).double().to(self.device)
+        self.actorNetwork=ActorNetwork(self.s_dim,self.a_dim).to(self.device)
         if self.is_central:
             # unify default parameters for tensorflow and pytorch
             self.actorOptim=torch.optim.RMSprop(self.actorNetwork.parameters(),lr=actor_lr,alpha=0.9,eps=1e-10)
@@ -31,7 +30,7 @@ class A3C(object):
                 model==1 mean critic_td
                 model==2 mean only actor
                 '''
-                self.criticNetwork=CriticNetwork(self.s_dim,self.a_dim).double().to(self.device)
+                self.criticNetwork=CriticNetwork(self.s_dim,self.a_dim).to(self.device)
                 self.criticOptim=torch.optim.RMSprop(self.criticNetwork.parameters(),lr=critic_lr,alpha=0.9,eps=1e-10)
                 self.criticOptim.zero_grad()
         else:
@@ -43,39 +42,42 @@ class A3C(object):
 
 
     def getNetworkGradient(self,s_batch,a_batch,r_batch,terminal):
-        s_batch=torch.from_numpy(s_batch).to(self.device)
-        a_batch=torch.from_numpy(a_batch).to(self.device)
-        R_batch=torch.zeros(r_batch.shape,dtype=torch.double).to(self.device)
-        r_batch=torch.from_numpy(r_batch).to(self.device)
-
+        s_batch=torch.cat(s_batch).to(self.device)
+        a_batch=torch.LongTensor(a_batch).to(self.device)
+        r_batch=torch.tensor(r_batch).to(self.device)
+        R_batch=torch.zeros(r_batch.shape).to(self.device)
 
         if terminal:
             pass
         else:
-            R_batch[-1,0] = v_batch[-1,0]
+            R_batch[-1] = v_batch[-1]
         for t in reversed(range(r_batch.shape[0]-1)):
-            R_batch[t,-1]=r_batch[t,-1] + self.discount*R_batch[t+1,-1]
+            R_batch[t]=r_batch[t] + self.discount*R_batch[t+1]
 
         if self.model_type<2:
             with torch.no_grad():
-                v_batch=self.criticNetwork.forward(s_batch).to(self.device)
+                v_batch=self.criticNetwork.forward(s_batch).squeeze().to(self.device)
             td_batch=R_batch-v_batch
         else:
             td_batch=R_batch
 
         probability=self.actorNetwork.forward(s_batch)
-        actor_loss=torch.sum(torch.log(torch.sum(probability*a_batch,1,keepdim=True))*(-td_batch))+self.entropy_weight*torch.sum(probability*torch.log(probability+self.entropy_eps))
+        m_probs=Categorical(probability)
+        log_probs=m_probs.log_prob(a_batch)
+        actor_loss=torch.sum(log_probs*(-td_batch))
+        entropy_loss=self.entropy_weight*torch.sum(probability*torch.log(probability+self.entropy_eps))
+        actor_loss=actor_loss+entropy_loss
         actor_loss.backward()
 
 
         if self.model_type<2:
             if self.model_type==0:
                 # original
-                critic_loss=self.loss_function(R_batch,self.criticNetwork.forward(s_batch))
+                critic_loss=self.loss_function(R_batch,self.criticNetwork.forward(s_batch).squeeze())
             else:
                 # cricit_td
-                v_batch=self.criticNetwork.forward(s_batch[:-1])
-                next_v_batch=self.criticNetwork.forward(s_batch[1:]).detach()
+                v_batch=self.criticNetwork.forward(s_batch[:-1]).squeeze()
+                next_v_batch=self.criticNetwork.forward(s_batch[1:]).squeeze().detach()
                 critic_loss=self.loss_function(r_batch[:-1]+self.discount*next_v_batch,v_batch)
 
             critic_loss.backward()
@@ -86,11 +88,12 @@ class A3C(object):
         
 
     def actionSelect(self,stateInputs):
-        stateInputs=torch.from_numpy(stateInputs).to(self.device)
         if not self.is_central:
             with torch.no_grad():
                 probability=self.actorNetwork.forward(stateInputs)
-                return probability.cpu().numpy()
+                m=Categorical(probability)
+                action=m.sample().item()
+                return action
 
 
 
@@ -118,7 +121,7 @@ if __name__ =='__main__':
     # test maddpg in convid,ok
     SINGLE_S_LEN=19
 
-    AGENT_NUM=5
+    AGENT_NUM=1
     BATCH_SIZE=200
 
     S_INFO=6
@@ -129,26 +132,18 @@ if __name__ =='__main__':
 
 
 
-    obj=A2C([S_INFO,S_LEN],ACTION_DIM)
-    timenow=datetime.now()
+    obj=A3C(False,0,[S_INFO,S_LEN],ACTION_DIM)
 
     episode=3000
     for i in range(episode):
 
-        state2Select=np.random.randn(1,S_INFO,S_LEN)
-        state=np.random.randn(AGENT_NUM,S_INFO,S_LEN)
-        action=np.random.randn(AGENT_NUM,ACTION_DIM)
-        reward=np.random.randn(AGENT_NUM,1)
-        #reward=0.47583
-            #print('action: '+str(out))
-        probability=obj.actionSelect(state2Select)
-        # return [[1,2,3,4,5,6]]
-        # updateNetwork ok
-        obj.updateNetwork(state,action,reward)
+        state=torch.randn(AGENT_NUM,S_INFO,S_LEN)
+        action=torch.randint(0,5,(AGENT_NUM,),dtype=torch.long)
+        reward=torch.randn(AGENT_NUM)
+        probability=obj.actionSelect(state)
+        print(probability)
 
 
-
-    print('train:'+str(episode)+' times use:'+str(datetime.now()-timenow))
 
 
 

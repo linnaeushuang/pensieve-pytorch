@@ -2,7 +2,7 @@ import os
 import logging
 import argparse
 import numpy as np
-import multiprocessing as mp
+import torch.multiprocessing as mp
 import env
 import load_trace
 import torch
@@ -38,7 +38,7 @@ TRAIN_TRACES = './data/cooked_traces/'
 #ACTOR_MODEL = './results/actor.pt'
 CRITIC_MODEL = None
 
-TOTALEPOCH=30000
+TOTALEPOCH=3000
 IS_CENTRAL=True
 NO_CENTRAL=False
 
@@ -135,7 +135,7 @@ def central_agent(net_params_queues, exp_queues, model_type):
             s_batch, a_batch, r_batch, terminal, info = exp_queues[i].get()
 
 
-            net.getNetworkGradient(np.stack(s_batch[1:],axis=0),np.vstack(a_batch[1:]),np.vstack(r_batch[1:]),terminal=terminal)
+            net.getNetworkGradient(s_batch[1:],a_batch[1:],r_batch[1:],terminal=terminal)
 
 
             total_reward += np.sum(r_batch)
@@ -183,16 +183,12 @@ def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue,
         last_bit_rate = DEFAULT_QUALITY
         bit_rate = DEFAULT_QUALITY
 
-        action_vec = np.zeros(A_DIM)
-        action_vec[bit_rate] = 1
-
-        s_batch = [np.zeros((S_INFO, S_LEN))]
-        a_batch = [action_vec]
+        s_batch = [torch.zeros((1,S_INFO, S_LEN))]
+        a_batch = [bit_rate]
         r_batch = []
         entropy_record = []
 
         time_stamp = 0
-
         epoch=0
         while True:  # experience video streaming forever
 
@@ -232,25 +228,20 @@ def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue,
 
             # retrieve previous state
             if len(s_batch) == 0:
-                state = [np.zeros((S_INFO, S_LEN))]
+                state = [torch.zeros((1,S_INFO, S_LEN))]
             else:
-                state = np.array(s_batch[-1], copy=True)
+                state = s_batch[-1].clone().detach()
 
-            # dequeue history record
-            state = np.roll(state, -1, axis=1)
+            state = torch.roll(state, -1,dims=-1)
 
-            # this should be S_INFO number of terms
-            state[0, -1] = VIDEO_BIT_RATE[bit_rate] / float(np.max(VIDEO_BIT_RATE))  # last quality
-            state[1, -1] = buffer_size / BUFFER_NORM_FACTOR  # 10 sec
-            state[2, -1] = float(video_chunk_size) / float(delay) / M_IN_K  # kilo byte / ms
-            state[3, -1] = float(delay) / M_IN_K / BUFFER_NORM_FACTOR  # 10 sec
-            state[4, :A_DIM] = np.array(next_video_chunk_sizes) / M_IN_K / M_IN_K  # mega byte
-            state[5, -1] = np.minimum(video_chunk_remain, CHUNK_TIL_VIDEO_END_CAP) / float(CHUNK_TIL_VIDEO_END_CAP)
+            state[0,0, -1] = VIDEO_BIT_RATE[bit_rate] / float(np.max(VIDEO_BIT_RATE))  # last quality
+            state[0,1, -1] = buffer_size / BUFFER_NORM_FACTOR  # 10 sec
+            state[0,2, -1] = float(video_chunk_size) / float(delay) / M_IN_K  # kilo byte / ms
+            state[0,3, -1] = float(delay) / M_IN_K / BUFFER_NORM_FACTOR  # 10 sec
+            state[0,4, :A_DIM] = torch.tensor(next_video_chunk_sizes) / M_IN_K / M_IN_K  # mega byte
+            state[0,5, -1] = min(video_chunk_remain, CHUNK_TIL_VIDEO_END_CAP) / float(CHUNK_TIL_VIDEO_END_CAP)
 
-            # compute action probability vector
-            action_prob = net.actionSelect(np.reshape(state, (1, S_INFO, S_LEN)))
-            action_cumsum = np.cumsum(action_prob)
-            bit_rate = (action_cumsum > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)).argmax()
+            bit_rate = net.actionSelect(state)
             # Note: we need to discretize the probability into 1/RAND_RANGE steps,
             # because there is an intrinsic discrepancy in passing single state and batch states
 
@@ -291,19 +282,12 @@ def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue,
             if end_of_video:
                 last_bit_rate = DEFAULT_QUALITY
                 bit_rate = DEFAULT_QUALITY  # use the default action here
-
-                action_vec = np.zeros(A_DIM)
-                action_vec[bit_rate] = 1
-
-                s_batch.append(np.zeros((S_INFO, S_LEN)))
-                a_batch.append(action_vec)
+                s_batch.append(torch.zeros((1,S_INFO, S_LEN)))
+                a_batch.append(bit_rate)
 
             else:
                 s_batch.append(state)
-
-                action_vec = np.zeros(A_DIM)
-                action_vec[bit_rate] = 1
-                a_batch.append(action_vec)
+                a_batch.append(bit_rate)
 
 
 def main(arglist):
