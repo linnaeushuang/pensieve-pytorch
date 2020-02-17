@@ -38,7 +38,7 @@ TRAIN_TRACES = './data/cooked_traces/'
 #ACTOR_MODEL = './results/actor.pt'
 CRITIC_MODEL = None
 
-TOTALEPOCH=3000
+TOTALEPOCH=30000
 IS_CENTRAL=True
 NO_CENTRAL=False
 
@@ -103,8 +103,7 @@ def central_agent(net_params_queues, exp_queues, model_type):
         net.criticNetwork.load_state_dict(torch.load(CRITIC_MODEL))
 
 
-    epoch=0
-    while epoch<TOTALEPOCH:
+    for epoch in range(TOTALEPOCH):
         # synchronize the network parameters of work agent
         actor_net_params=net.getActorParam()
         #critic_net_params=net.getCriticParam()
@@ -135,7 +134,7 @@ def central_agent(net_params_queues, exp_queues, model_type):
             s_batch, a_batch, r_batch, terminal, info = exp_queues[i].get()
 
 
-            net.getNetworkGradient(s_batch[1:],a_batch[1:],r_batch[1:],terminal=terminal)
+            net.getNetworkGradient(s_batch,a_batch,r_batch,terminal=terminal)
 
 
             total_reward += np.sum(r_batch)
@@ -146,7 +145,6 @@ def central_agent(net_params_queues, exp_queues, model_type):
         # log training information
         net.updateNetwork()
 
-        epoch += 1
         avg_reward = total_reward  / total_agents
         avg_entropy = total_entropy / total_batch_len
 
@@ -154,14 +152,15 @@ def central_agent(net_params_queues, exp_queues, model_type):
                      ' Avg_reward: ' + str(avg_reward) +
                      ' Avg_entropy: ' + str(avg_entropy))
 
-        if epoch % MODEL_SAVE_INTERVAL == 0:
+        
+        if (epoch+1) % MODEL_SAVE_INTERVAL == 0:
             # Save the neural net parameters to disk.
-            print("\nTrain ep:"+str(epoch)+",time use :"+str((datetime.now()-timenow).seconds)+"s\n")
+            print("\nTrain ep:"+str(epoch+1)+",time use :"+str((datetime.now()-timenow).seconds)+"s\n")
             timenow=datetime.now()
             torch.save(net.actorNetwork.state_dict(),SUMMARY_DIR+"/actor.pt")
             if model_type<2:
                 torch.save(net.criticNetwork.state_dict(),SUMMARY_DIR+"/critic.pt")
-            testing(epoch,SUMMARY_DIR+"/actor.pt",test_log_file)
+            testing(epoch+1,SUMMARY_DIR+"/actor.pt",test_log_file)
 
 
 def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue, model_type):
@@ -173,24 +172,21 @@ def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue,
 
     with open(LOG_FILE+'_agent_'+str(agent_id),'w') as log_file:
 
-
         net=A3C(NO_CENTRAL,model_type,[S_INFO,S_LEN],A_DIM,ACTOR_LR_RATE,CRITIC_LR_RATE)
 
         # initial synchronization of the network parameters from the coordinator
-        actor_net_params= net_params_queue.get()
-        net.hardUpdateActorNetwork(actor_net_params)
-
-        last_bit_rate = DEFAULT_QUALITY
-        bit_rate = DEFAULT_QUALITY
-
-        s_batch = [torch.zeros((1,S_INFO, S_LEN))]
-        a_batch = [bit_rate]
-        r_batch = []
-        entropy_record = []
 
         time_stamp = 0
-        epoch=0
-        while True:  # experience video streaming forever
+        for epoch in range(TOTALEPOCH):
+            actor_net_params= net_params_queue.get()
+            net.hardUpdateActorNetwork(actor_net_params)
+            last_bit_rate = DEFAULT_QUALITY
+            bit_rate = DEFAULT_QUALITY
+            s_batch = []
+            a_batch = []
+            r_batch = []
+            entropy_record = []
+            state = torch.zeros((1,S_INFO,S_LEN))
 
             # the action is from the last decision
             # this is to make the framework similar to the real
@@ -202,92 +198,57 @@ def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue,
             time_stamp += delay  # in ms
             time_stamp += sleep_time  # in ms
 
-            # -- linear reward --
-            # reward is video quality - rebuffer penalty - smoothness
-            reward = VIDEO_BIT_RATE[bit_rate] / M_IN_K \
-                     - REBUF_PENALTY * rebuf \
-                     - SMOOTH_PENALTY * np.abs(VIDEO_BIT_RATE[bit_rate] -
-                                               VIDEO_BIT_RATE[last_bit_rate]) / M_IN_K
+            while not end_of_video and len(s_batch) < TRAIN_SEQ_LEN:
+                last_bit_rate = bit_rate
 
-            # -- log scale reward --
-            # log_bit_rate = np.log(VIDEO_BIT_RATE[bit_rate] / float(VIDEO_BIT_RATE[-1]))
-            # log_last_bit_rate = np.log(VIDEO_BIT_RATE[last_bit_rate] / float(VIDEO_BIT_RATE[-1]))
+                state = state.clone().detach()
 
-            # reward = log_bit_rate \
-            #          - REBUF_PENALTY * rebuf \
-            #          - SMOOTH_PENALTY * np.abs(log_bit_rate - log_last_bit_rate)
+                state = torch.roll(state, -1,dims=-1)
 
-            # -- HD reward --
-            # reward = HD_REWARD[bit_rate] \
-            #          - REBUF_PENALTY * rebuf \
-            #          - SMOOTH_PENALTY * np.abs(HD_REWARD[bit_rate] - HD_REWARD[last_bit_rate])
+                state[0,0, -1] = VIDEO_BIT_RATE[bit_rate] / float(np.max(VIDEO_BIT_RATE))  # last quality
+                state[0,1, -1] = buffer_size / BUFFER_NORM_FACTOR  # 10 sec
+                state[0,2, -1] = float(video_chunk_size) / float(delay) / M_IN_K  # kilo byte / ms
+                state[0,3, -1] = float(delay) / M_IN_K / BUFFER_NORM_FACTOR  # 10 sec
+                state[0,4, :A_DIM] = torch.tensor(next_video_chunk_sizes) / M_IN_K / M_IN_K  # mega byte
+                state[0,5, -1] = min(video_chunk_remain, CHUNK_TIL_VIDEO_END_CAP) / float(CHUNK_TIL_VIDEO_END_CAP)
 
-            r_batch.append(reward)
+                bit_rate = net.actionSelect(state)
+                # Note: we need to discretize the probability into 1/RAND_RANGE steps,
+                # because there is an intrinsic discrepancy in passing single state and batch states
 
-            last_bit_rate = bit_rate
+                delay, sleep_time, buffer_size, rebuf, \
+                video_chunk_size, next_video_chunk_sizes, \
+                end_of_video, video_chunk_remain = \
+                    net_env.get_video_chunk(bit_rate)
+                reward = VIDEO_BIT_RATE[bit_rate] / M_IN_K \
+                         - REBUF_PENALTY * rebuf \
+                         - SMOOTH_PENALTY * np.abs(VIDEO_BIT_RATE[bit_rate] -
+                                                   VIDEO_BIT_RATE[last_bit_rate]) / M_IN_K
 
-            # retrieve previous state
-            if len(s_batch) == 0:
-                state = [torch.zeros((1,S_INFO, S_LEN))]
-            else:
-                state = s_batch[-1].clone().detach()
-
-            state = torch.roll(state, -1,dims=-1)
-
-            state[0,0, -1] = VIDEO_BIT_RATE[bit_rate] / float(np.max(VIDEO_BIT_RATE))  # last quality
-            state[0,1, -1] = buffer_size / BUFFER_NORM_FACTOR  # 10 sec
-            state[0,2, -1] = float(video_chunk_size) / float(delay) / M_IN_K  # kilo byte / ms
-            state[0,3, -1] = float(delay) / M_IN_K / BUFFER_NORM_FACTOR  # 10 sec
-            state[0,4, :A_DIM] = torch.tensor(next_video_chunk_sizes) / M_IN_K / M_IN_K  # mega byte
-            state[0,5, -1] = min(video_chunk_remain, CHUNK_TIL_VIDEO_END_CAP) / float(CHUNK_TIL_VIDEO_END_CAP)
-
-            bit_rate = net.actionSelect(state)
-            # Note: we need to discretize the probability into 1/RAND_RANGE steps,
-            # because there is an intrinsic discrepancy in passing single state and batch states
-
-            entropy_record.append(3)
-
-            # log time_stamp, bit_rate, buffer_size, reward
-            log_file.write(str(time_stamp) + '\t' +
-                           str(VIDEO_BIT_RATE[bit_rate]) + '\t' +
-                           str(buffer_size) + '\t' +
-                           str(rebuf) + '\t' +
-                           str(video_chunk_size) + '\t' +
-                           str(delay) + '\t' +
-                           str(reward) + '\n')
-            log_file.flush()
-
-            # report experience to the coordinator
-            if len(r_batch) >= TRAIN_SEQ_LEN or end_of_video:
-
-                exp_queue.put([s_batch[1:],  # ignore the first chuck
-                               a_batch[1:],  # since we don't have the
-                               r_batch[1:],  # control over it
-                               end_of_video,
-                               {'entropy': entropy_record}])
-                
-                epoch+=1
-                if epoch<TOTALEPOCH:
-                    actor_net_params=net_params_queue.get()
-                    net.hardUpdateActorNetwork(actor_net_params)
-                    del s_batch[:]
-                    del a_batch[:]
-                    del r_batch[:]
-                    del entropy_record[:]
-                    log_file.write('\n')  # so that in the log we know where video ends
-                else:
-                    break
-
-            # store the state and action into batches
-            if end_of_video:
-                last_bit_rate = DEFAULT_QUALITY
-                bit_rate = DEFAULT_QUALITY  # use the default action here
-                s_batch.append(torch.zeros((1,S_INFO, S_LEN)))
-                a_batch.append(bit_rate)
-
-            else:
                 s_batch.append(state)
                 a_batch.append(bit_rate)
+                r_batch.append(reward)
+                entropy_record.append(3)
+
+                # log time_stamp, bit_rate, buffer_size, reward
+                log_file.write(str(time_stamp) + '\t' +
+                               str(VIDEO_BIT_RATE[bit_rate]) + '\t' +
+                               str(buffer_size) + '\t' +
+                               str(rebuf) + '\t' +
+                               str(video_chunk_size) + '\t' +
+                               str(delay) + '\t' +
+                               str(reward) + '\n')
+                log_file.flush()
+
+
+
+            exp_queue.put([s_batch,  # ignore the first chuck
+                           a_batch,  # since we don't have the
+                           r_batch,  # control over it
+                           end_of_video,
+                           {'entropy': entropy_record}])
+            
+            log_file.write('\n')  # so that in the log we know where video ends
 
 
 def main(arglist):

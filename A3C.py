@@ -47,10 +47,7 @@ class A3C(object):
         r_batch=torch.tensor(r_batch).to(self.device)
         R_batch=torch.zeros(r_batch.shape).to(self.device)
 
-        if terminal:
-            pass
-        else:
-            R_batch[-1] = v_batch[-1]
+        R_batch[-1] = r_batch[-1]
         for t in reversed(range(r_batch.shape[0]-1)):
             R_batch[t]=r_batch[t] + self.discount*R_batch[t+1]
 
@@ -65,7 +62,7 @@ class A3C(object):
         m_probs=Categorical(probability)
         log_probs=m_probs.log_prob(a_batch)
         actor_loss=torch.sum(log_probs*(-td_batch))
-        entropy_loss=self.entropy_weight*torch.sum(probability*torch.log(probability+self.entropy_eps))
+        entropy_loss=-self.entropy_weight*torch.sum(m_probs.entropy())
         actor_loss=actor_loss+entropy_loss
         actor_loss.backward()
 
