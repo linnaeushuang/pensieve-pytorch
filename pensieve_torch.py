@@ -228,7 +228,7 @@ def agent(agent_id, all_cooked_time, all_cooked_bw, net_params_queue, exp_queue,
 
             # retrieve previous state
             if len(s_batch) == 0:
-                state = [torch.zeros((1,S_INFO, S_LEN))]
+                state = torch.zeros((1,S_INFO, S_LEN))
             else:
                 state = s_batch[-1].clone().detach()
 
