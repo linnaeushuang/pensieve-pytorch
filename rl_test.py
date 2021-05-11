@@ -1,11 +1,10 @@
 import os
 import sys
+import numpy as np
 import torch
 import load_trace
-import numpy as np
 import fixed_env as env
-from Network import ActorNetwork
-from torch.distributions import Categorical
+from ppo import PPO
 
 
 S_INFO = 6  # bit_rate, buffer_size, next_chunk_size, bandwidth_measurement(throughput and time), chunk_til_video_end
@@ -45,10 +44,10 @@ def main():
 
     # all models have same actor network
     # so model_type can be anything
-    net=ActorNetwork([S_INFO,S_LEN],A_DIM)
+    net=PPO([S_INFO,S_LEN],A_DIM)
 
     # restore neural net parameters
-    net.load_state_dict(torch.load(ACTOR_MODEL))
+    net.actorNetwork.load_state_dict(torch.load(ACTOR_MODEL))
     print("Testing model restored.")
 
     time_stamp = 0
@@ -56,8 +55,15 @@ def main():
     last_bit_rate = DEFAULT_QUALITY
     bit_rate = DEFAULT_QUALITY
 
+    action_vec = np.zeros(A_DIM)
+    action_vec[bit_rate] = 1
+
+    s_batch = [np.zeros((S_INFO, S_LEN))]
+    a_batch = [action_vec]
+    r_batch = []
+    entropy_record = []
+
     video_count = 0
-    state=torch.zeros((S_INFO,S_LEN))
 
     while True:  # serve video forever
         # the action is from the last decision
@@ -76,6 +82,8 @@ def main():
                  - SMOOTH_PENALTY * np.abs(VIDEO_BIT_RATE[bit_rate] -
                                            VIDEO_BIT_RATE[last_bit_rate]) / M_IN_K
 
+        r_batch.append(reward)
+
         last_bit_rate = bit_rate
 
         # log time_stamp, bit_rate, buffer_size, reward
@@ -89,23 +97,31 @@ def main():
         log_file.flush()
 
         # retrieve previous state
-        state = torch.roll(state,-1,dims=-1)
+        if len(s_batch) == 0:
+            state = [np.zeros((S_INFO, S_LEN))]
+        else:
+            state = np.array(s_batch[-1], copy=True)
+
+        # dequeue history record
+        state = np.roll(state, -1, axis=1)
 
         # this should be S_INFO number of terms
         state[0, -1] = VIDEO_BIT_RATE[bit_rate] / float(np.max(VIDEO_BIT_RATE))  # last quality
         state[1, -1] = buffer_size / BUFFER_NORM_FACTOR  # 10 sec
         state[2, -1] = float(video_chunk_size) / float(delay) / M_IN_K  # kilo byte / ms
         state[3, -1] = float(delay) / M_IN_K / BUFFER_NORM_FACTOR  # 10 sec
-        state[4, :A_DIM] = torch.tensor(next_video_chunk_sizes) / M_IN_K / M_IN_K  # mega byte
-        state[5, -1] = min(video_chunk_remain, CHUNK_TIL_VIDEO_END_CAP) / float(CHUNK_TIL_VIDEO_END_CAP)
+        state[4, :A_DIM] = np.array(next_video_chunk_sizes) / M_IN_K / M_IN_K  # mega byte
+        state[5, -1] = np.minimum(video_chunk_remain, CHUNK_TIL_VIDEO_END_CAP) / float(CHUNK_TIL_VIDEO_END_CAP)
 
-        with torch.no_grad():
-            probability=net.forward(state.unsqueeze(0))
-            m=Categorical(probability)
-            bit_rate=m.sample().item()
+        action_prob = net.actionSelect(np.reshape(state, (1, S_INFO, S_LEN)))
+        action_cumsum = np.cumsum(action_prob)
+        bit_rate = (action_cumsum > np.random.randint(1, RAND_RANGE) / float(RAND_RANGE)).argmax()
         # Note: we need to discretize the probability into 1/RAND_RANGE steps,
         # because there is an intrinsic discrepancy in passing single state and batch states
 
+        s_batch.append(state)
+
+        entropy_record.append(3)
 
         if end_of_video:
             log_file.write('\n')
@@ -114,7 +130,16 @@ def main():
             last_bit_rate = DEFAULT_QUALITY
             bit_rate = DEFAULT_QUALITY  # use the default action here
 
-            state=torch.zeros((S_INFO,S_LEN))
+            del s_batch[:]
+            del a_batch[:]
+            del r_batch[:]
+
+            action_vec = np.zeros(A_DIM)
+            action_vec[bit_rate] = 1
+
+            s_batch.append(np.zeros((S_INFO, S_LEN)))
+            a_batch.append(action_vec)
+            entropy_record = []
 
             video_count += 1
 
